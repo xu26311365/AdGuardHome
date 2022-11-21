@@ -7,14 +7,13 @@ import (
 )
 
 func TestNewDefaultStorage(t *testing.T) {
-	c := &DefaultStorageConfig{
-		rulesText: []string{
-			"|a-record^$dnsrewrite=127.0.0.1",
-		},
-	}
+	items := []*Item{{
+		Domain: "example.com",
+		Answer: "answer.com",
+	}}
 
-	s, err := NewDefaultStorage(-1, c)
+	s, err := NewDefaultStorage(-1, items)
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(s.ReadRules()))
+	require.Equal(t, 1, len(s.List()))
 }

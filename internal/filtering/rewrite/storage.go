@@ -16,14 +16,14 @@ type Storage interface {
 	// Match finds a matching rule for the specified hostname.
 	Match(hostname string) (res *urlfilter.DNSResult, matched bool)
 
-	// AddRule creates rule from text and adds it to the storage.
-	AddRule(line string) (err error)
+	// Add adds item to the storage.
+	Add(item *Item) (err error)
 
-	// ReadRules returns all rules from the storage.
-	ReadRules() (lines []string)
+	// Remove deletes item from the storage.
+	Remove(item *Item) (err error)
 
-	// RemoveRule deletes rule from the storage.
-	RemoveRule(line string) (err error)
+	// List returns all items from the storage.
+	List() (items []*Item)
 }
 
 // DefaultStorage is the default storage for rewrite rules.
@@ -43,23 +43,38 @@ type DefaultStorage struct {
 	// remove this crutch.
 	urlFilterID int
 
-	// rulesText is an array of rule lines.
-	rulesText []string
+	// rewrites is an array of rewrite items.
+	// TODO(d.kolyshev): Use filtering.Config.Rewrites?
+	rewrites []*Item
 }
 
-// DefaultStorageConfig contains configuration for a rewrite storage.
-type DefaultStorageConfig struct {
-	// rulesText is an array of rule lines.
-	rulesText []string
+// Item is a single DNS rewrite record.
+type Item struct {
+	// Domain is the domain pattern for which this rewrite should work.
+	Domain string `yaml:"domain"`
+
+	// Answer is the IP address, canonical name, or one of the special
+	// values: "A" or "AAAA".
+	Answer string `yaml:"answer"`
+}
+
+// equal returns true if the rw is equal to the other.
+func (rw *Item) equal(other *Item) (ok bool) {
+	return rw.Domain == other.Domain && rw.Answer == other.Answer
+}
+
+// toRule converts this item to a filter rule.
+func (rw *Item) toRule() (res string) {
+	return fmt.Sprintf("|%s^$dnsrewrite=%s", rw.Domain, rw.Answer)
 }
 
 // NewDefaultStorage returns new rewrites storage.  listID is used as an
-// identifier of the underlying rules list.  c must not be nil.
-func NewDefaultStorage(listID int, c *DefaultStorageConfig) (s *DefaultStorage, err error) {
+// identifier of the underlying rules list.  rewrites must not be nil.
+func NewDefaultStorage(listID int, rewrites []*Item) (s *DefaultStorage, err error) {
 	s = &DefaultStorage{
 		mu:          &sync.RWMutex{},
 		urlFilterID: listID,
-		rulesText:   c.rulesText,
+		rewrites:    rewrites,
 	}
 
 	s.mu.Lock()
@@ -73,13 +88,6 @@ func NewDefaultStorage(listID int, c *DefaultStorageConfig) (s *DefaultStorage, 
 	return s, nil
 }
 
-// Config returns storage configuration.
-func (s *DefaultStorage) Config() (c *DefaultStorageConfig) {
-	return &DefaultStorageConfig{
-		rulesText: s.rulesText,
-	}
-}
-
 // type check
 var _ Storage = (*DefaultStorage)(nil)
 
@@ -88,46 +96,55 @@ func (s *DefaultStorage) Match(hostname string) (res *urlfilter.DNSResult, match
 	return s.engine.Match(hostname)
 }
 
-// AddRule implements the Storage interface for *DefaultStorage.
-func (s *DefaultStorage) AddRule(line string) (err error) {
+// Add implements the Storage interface for *DefaultStorage.
+func (s *DefaultStorage) Add(item *Item) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.rulesText = append(s.rulesText, line)
+	s.rewrites = append(s.rewrites, item)
 
 	return s.resetRules()
 }
 
-// ReadRules implements the Storage interface for *DefaultStorage.
-func (s *DefaultStorage) ReadRules() (lines []string) {
+// Remove implements the Storage interface for *DefaultStorage.
+func (s *DefaultStorage) Remove(item *Item) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.rulesText
-}
+	arr := []*Item{}
 
-// RemoveRule implements the Storage interface for *DefaultStorage.
-func (s *DefaultStorage) RemoveRule(line string) (err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	for _, ent := range s.rewrites {
+		if ent.equal(item) {
+			log.Debug("rewrite: removed element: %s -> %s", ent.Domain, ent.Answer)
 
-	var filtered []string
-	for i, r := range s.rulesText {
-		if r != line {
-			filtered = append(filtered, s.rulesText[i])
+			continue
 		}
-	}
 
-	s.rulesText = filtered
+		arr = append(arr, ent)
+	}
+	s.rewrites = arr
 
 	return s.resetRules()
+}
+
+// List implements the Storage interface for *DefaultStorage.
+func (s *DefaultStorage) List() (items []*Item) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.rewrites
 }
 
 // resetRules resets the filtering rules.
 func (s *DefaultStorage) resetRules() (err error) {
+	var rulesText []string
+	for _, rewrite := range s.rewrites {
+		rulesText = append(rulesText, rewrite.toRule())
+	}
+
 	strList := &filterlist.StringRuleList{
 		ID:             s.urlFilterID,
-		RulesText:      strings.Join(s.rulesText, "\n"),
+		RulesText:      strings.Join(rulesText, "\n"),
 		IgnoreCosmetic: true,
 	}
 
