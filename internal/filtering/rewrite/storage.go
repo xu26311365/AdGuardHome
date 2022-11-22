@@ -9,6 +9,7 @@ import (
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/AdguardTeam/urlfilter"
 	"github.com/AdguardTeam/urlfilter/filterlist"
+	"golang.org/x/exp/slices"
 )
 
 // Storage is a storage for rewrite rules.
@@ -58,12 +59,13 @@ type Item struct {
 	Answer string `yaml:"answer"`
 }
 
-// equal returns true if the rw is equal to the other.
+// equal returns true if rw is equal to other.  Panics if rw or other is nil.
 func (rw *Item) equal(other *Item) (ok bool) {
 	return rw.Domain == other.Domain && rw.Answer == other.Answer
 }
 
 // toRule converts this item to a filter rule.
+// TODO(d.kolyshev): This is very simple implementation.
 func (rw *Item) toRule() (res string) {
 	return fmt.Sprintf("|%s^$dnsrewrite=%s", rw.Domain, rw.Answer)
 }
@@ -93,6 +95,9 @@ var _ Storage = (*DefaultStorage)(nil)
 
 // Match implements the Storage interface for *DefaultStorage.
 func (s *DefaultStorage) Match(hostname string) (res *urlfilter.DNSResult, matched bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	return s.engine.Match(hostname)
 }
 
@@ -107,6 +112,7 @@ func (s *DefaultStorage) Add(item *Item) (err error) {
 }
 
 // Remove implements the Storage interface for *DefaultStorage.
+// TODO(d.kolyshev): Delete only current item.
 func (s *DefaultStorage) Remove(item *Item) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,10 +135,10 @@ func (s *DefaultStorage) Remove(item *Item) (err error) {
 
 // List implements the Storage interface for *DefaultStorage.
 func (s *DefaultStorage) List() (items []*Item) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	return s.rewrites
+	return slices.Clone(s.rewrites)
 }
 
 // resetRules resets the filtering rules.
