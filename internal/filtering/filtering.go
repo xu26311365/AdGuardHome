@@ -626,6 +626,12 @@ func setRewriteResult(res *Result, host string, nrules []*rules.NetworkRule, qty
 	res.Reason = Rewritten
 
 	for _, rw := range nrules {
+		if rw.Whitelist {
+			res.Reason = NotFilteredNotFound
+
+			return
+		}
+
 		dnsRewrite := rw.DNSRewrite
 		if dnsRewrite == nil {
 			continue
@@ -634,10 +640,7 @@ func setRewriteResult(res *Result, host string, nrules []*rules.NetworkRule, qty
 		if dnsRewrite.RRType == qtype && (qtype == dns.TypeA || qtype == dns.TypeAAAA) {
 			ip, ok := dnsRewrite.Value.(net.IP)
 			if !ok || ip == nil {
-				// "A"/"AAAA" exception: allow getting from upstream.
-				res.Reason = NotFilteredNotFound
-
-				return
+				continue
 			}
 
 			if qtype == dns.TypeA {
