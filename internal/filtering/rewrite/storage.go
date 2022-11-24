@@ -69,8 +69,14 @@ type Item struct {
 	Exception bool `yaml:"-"`
 }
 
-// equal returns true if rw is equal to other.  Panics if rw or other is nil.
+// equal returns true if rw is equal to other.
 func (rw *Item) equal(other *Item) (ok bool) {
+	if rw == nil {
+		return other == nil
+	} else if other == nil {
+		return false
+	}
+
 	return rw.Domain == other.Domain && rw.Answer == other.Answer
 }
 
