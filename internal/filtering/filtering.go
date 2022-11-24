@@ -18,6 +18,7 @@ import (
 
 	"github.com/AdguardTeam/AdGuardHome/internal/aghhttp"
 	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
+	"github.com/AdguardTeam/AdGuardHome/internal/filtering/rewrite"
 	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/cache"
 	"github.com/AdguardTeam/golibs/errors"
@@ -40,6 +41,7 @@ const (
 	ParentalListID
 	SafeBrowsingListID
 	SafeSearchListID
+	RewritesListID
 )
 
 // ServiceEntry - blocked service array element
@@ -89,7 +91,7 @@ type Config struct {
 	ParentalCacheSize     uint `yaml:"parental_cache_size"`     // (in bytes)
 	CacheTime             uint `yaml:"cache_time"`              // Element's TTL (in minutes)
 
-	Rewrites []*LegacyRewrite `yaml:"rewrites"`
+	Rewrites []*rewrite.Item `yaml:"rewrites"`
 
 	// Names of services to block (globally).
 	// Per-client settings can override this configuration.
@@ -190,6 +192,8 @@ type DNSFilter struct {
 	// filterTitleRegexp is the regular expression to retrieve a name of a
 	// filter list.
 	filterTitleRegexp *regexp.Regexp
+
+	rewriteStorage *rewrite.DefaultStorage
 
 	hostCheckers []hostChecker
 }
@@ -312,7 +316,7 @@ func (d *DNSFilter) WriteDiskConfig(c *Config) {
 		defer d.confLock.Unlock()
 
 		*c = d.Config
-		c.Rewrites = cloneRewrites(c.Rewrites)
+		c.Rewrites = slices.Clone(c.Rewrites)
 	}()
 
 	d.filtersMu.RLock()
@@ -321,16 +325,6 @@ func (d *DNSFilter) WriteDiskConfig(c *Config) {
 	c.Filters = slices.Clone(d.Filters)
 	c.WhitelistFilters = slices.Clone(d.WhitelistFilters)
 	c.UserRules = slices.Clone(d.UserRules)
-}
-
-// cloneRewrites returns a deep copy of entries.
-func cloneRewrites(entries []*LegacyRewrite) (clone []*LegacyRewrite) {
-	clone = make([]*LegacyRewrite, len(entries))
-	for i, rw := range entries {
-		clone[i] = rw.clone()
-	}
-
-	return clone
 }
 
 // SetFilters sets new filters, synchronously or asynchronously.  When filters
@@ -545,23 +539,30 @@ func (d *DNSFilter) matchSysHosts(
 // Secondly, it finds A or AAAA rewrites for host and, if found, sets res.IPList
 // accordingly.  If the found rewrite has a special value of "A" or "AAAA", the
 // result is an exception.
+//
+// TODO(a.garipov): Consider moving this to urlfilter.
 func (d *DNSFilter) processRewrites(host string, qtype uint16) (res Result) {
-	d.confLock.RLock()
-	defer d.confLock.RUnlock()
+	d.confLock.Lock()
+	defer d.confLock.Unlock()
 
-	rewrites, matched := findRewrites(d.Rewrites, host, qtype)
-	if !matched {
-		return Result{}
+	dnsres, _ := d.rewriteStorage.MatchRequest(&urlfilter.DNSRequest{
+		Hostname: host,
+		DNSType:  qtype,
+	})
+	if dnsres == nil {
+		return res
 	}
 
-	res.Reason = Rewritten
+	dnsr := dnsres.DNSRewrites()
+	if len(dnsr) == 0 {
+		return res
+	}
 
 	cnames := stringutil.NewSet()
 	origHost := host
-	for matched && len(rewrites) > 0 && rewrites[0].Type == dns.TypeCNAME {
-		rw := rewrites[0]
-		rwPat := rw.Domain
-		rwAns := rw.Answer
+	for len(dnsr) > 0 && dnsr[0].DNSRewrite != nil && dnsr[0].DNSRewrite.NewCNAME != "" {
+		rwPat := pattern(dnsr[0])
+		rwAns := dnsr[0].DNSRewrite.NewCNAME
 
 		log.Debug("rewrite: cname for %s is %s", host, rwAns)
 
@@ -589,29 +590,64 @@ func (d *DNSFilter) processRewrites(host string, qtype uint16) (res Result) {
 
 		cnames.Add(host)
 		res.CanonName = host
-		rewrites, matched = findRewrites(d.Rewrites, host, qtype)
+
+		dnsres, _ = d.rewriteStorage.MatchRequest(&urlfilter.DNSRequest{
+			Hostname: host,
+			DNSType:  qtype,
+		})
+		if dnsres == nil {
+			break
+		}
+
+		dnsr = dnsres.DNSRewrites()
 	}
 
-	setRewriteResult(&res, host, rewrites, qtype)
+	setRewriteResult(&res, host, dnsr, qtype)
 
 	return res
 }
 
+// isWildcard returns true if pat is a wildcard domain pattern.
+func isWildcard(pat string) bool {
+	return len(pat) > 1 && pat[0] == '*' && pat[1] == '.'
+}
+
+// pattern returns rule pattern.
+// TODO(d.kolyshev): !! This is not a solution.
+func pattern(rule *rules.NetworkRule) string {
+	startIndex := strings.Index(rule.RuleText, "|")
+	endIndex := strings.Index(rule.RuleText, "^")
+
+	return rule.RuleText[startIndex+1 : endIndex]
+}
+
 // setRewriteResult sets the Reason or IPList of res if necessary.  res must not
 // be nil.
-func setRewriteResult(res *Result, host string, rewrites []*LegacyRewrite, qtype uint16) {
-	for _, rw := range rewrites {
-		if rw.Type == qtype && (qtype == dns.TypeA || qtype == dns.TypeAAAA) {
-			if rw.IP == nil {
+func setRewriteResult(res *Result, host string, nrules []*rules.NetworkRule, qtype uint16) {
+	res.Reason = Rewritten
+
+	for _, rw := range nrules {
+		dnsRewrite := rw.DNSRewrite
+		if dnsRewrite == nil {
+			continue
+		}
+
+		if dnsRewrite.RRType == qtype && (qtype == dns.TypeA || qtype == dns.TypeAAAA) {
+			ip, ok := dnsRewrite.Value.(net.IP)
+			if !ok || ip == nil {
 				// "A"/"AAAA" exception: allow getting from upstream.
 				res.Reason = NotFilteredNotFound
 
 				return
 			}
 
-			res.IPList = append(res.IPList, rw.IP)
+			if qtype == dns.TypeA {
+				ip = ip.To4()
+			}
 
-			log.Debug("rewrite: a/aaaa for %s is %s", host, rw.IP)
+			res.IPList = append(res.IPList, ip)
+
+			log.Debug("rewrite: a/aaaa for %s is %s", host, ip)
 		}
 	}
 }

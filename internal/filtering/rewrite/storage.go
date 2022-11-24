@@ -3,19 +3,22 @@ package rewrite
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 
+	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/AdguardTeam/urlfilter"
 	"github.com/AdguardTeam/urlfilter/filterlist"
+	"github.com/miekg/dns"
 	"golang.org/x/exp/slices"
 )
 
 // Storage is a storage for rewrite rules.
 type Storage interface {
-	// Match finds a matching rule for the specified hostname.
-	Match(hostname string) (res *urlfilter.DNSResult, matched bool)
+	// MatchRequest finds a matching rule for the specified request.
+	MatchRequest(dReq *urlfilter.DNSRequest) (res *urlfilter.DNSResult, matched bool)
 
 	// Add adds item to the storage.
 	Add(item *Item) (err error)
@@ -57,6 +60,13 @@ type Item struct {
 	// Answer is the IP address, canonical name, or one of the special
 	// values: "A" or "AAAA".
 	Answer string `yaml:"answer"`
+
+	// Type is the DNS record type: A, AAAA, or CNAME.
+	Type uint16 `yaml:"-"`
+
+	// Exception is the flag to create exception rules with Domain special
+	// values "A" or "AAAA".
+	Exception bool `yaml:"-"`
 }
 
 // equal returns true if rw is equal to other.  Panics if rw or other is nil.
@@ -65,9 +75,58 @@ func (rw *Item) equal(other *Item) (ok bool) {
 }
 
 // toRule converts this item to a filter rule.
-// TODO(d.kolyshev): This is very simple implementation.
 func (rw *Item) toRule() (res string) {
-	return fmt.Sprintf("|%s^$dnsrewrite=%s", rw.Domain, rw.Answer)
+	if rw.Exception {
+		return fmt.Sprintf("@@||%s^$dnstype=%s,dnsrewrite", rw.Domain, dns.TypeToString[rw.Type])
+	}
+
+	return fmt.Sprintf("|%s^$dnsrewrite=NOERROR;%s;%s", rw.Domain, dns.TypeToString[rw.Type], rw.Answer)
+}
+
+// Normalize makes sure that the a new or decoded entry is normalized with
+// regards to domain name case, IP length, and so on.
+//
+// If rw is nil, it returns an errors.
+func (rw *Item) Normalize() (err error) {
+	if rw == nil {
+		return errors.Error("nil rewrite entry")
+	}
+
+	// TODO(a.garipov): Write a case-agnostic version of strings.HasSuffix and
+	// use it in matchDomainWildcard instead of using strings.ToLower
+	// everywhere.
+	rw.Domain = strings.ToLower(rw.Domain)
+
+	switch rw.Answer {
+	case "AAAA":
+		rw.Type = dns.TypeAAAA
+		rw.Exception = true
+
+		return nil
+	case "A":
+		rw.Type = dns.TypeA
+		rw.Exception = true
+
+		return nil
+	default:
+		// Go on.
+	}
+
+	ip := net.ParseIP(rw.Answer)
+	if ip == nil {
+		rw.Type = dns.TypeCNAME
+
+		return nil
+	}
+
+	ip4 := ip.To4()
+	if ip4 != nil {
+		rw.Type = dns.TypeA
+	} else {
+		rw.Type = dns.TypeAAAA
+	}
+
+	return nil
 }
 
 // NewDefaultStorage returns new rewrites storage.  listID is used as an
@@ -93,12 +152,12 @@ func NewDefaultStorage(listID int, rewrites []*Item) (s *DefaultStorage, err err
 // type check
 var _ Storage = (*DefaultStorage)(nil)
 
-// Match implements the Storage interface for *DefaultStorage.
-func (s *DefaultStorage) Match(hostname string) (res *urlfilter.DNSResult, matched bool) {
+// MatchRequest implements the Storage interface for *DefaultStorage.
+func (s *DefaultStorage) MatchRequest(dReq *urlfilter.DNSRequest) (res *urlfilter.DNSResult, matched bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.engine.Match(hostname)
+	return s.engine.MatchRequest(dReq)
 }
 
 // Add implements the Storage interface for *DefaultStorage.
