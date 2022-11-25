@@ -15,7 +15,7 @@ func TestNewDefaultStorage(t *testing.T) {
 	s, err := NewDefaultStorage(-1, items)
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(s.List()))
+	require.Len(t, s.List(), 1)
 }
 
 func TestDefaultStorage_CRUD(t *testing.T) {
@@ -23,7 +23,7 @@ func TestDefaultStorage_CRUD(t *testing.T) {
 
 	s, err := NewDefaultStorage(-1, items)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(s.List()))
+	require.Len(t, s.List(), 0)
 
 	item := &Item{Domain: "example.com", Answer: "answer.com"}
 
@@ -31,10 +31,10 @@ func TestDefaultStorage_CRUD(t *testing.T) {
 	require.NoError(t, err)
 
 	list := s.List()
-	require.Equal(t, 1, len(list))
+	require.Len(t, list, 1)
 	require.True(t, item.equal(list[0]))
 
 	err = s.Remove(item)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(s.List()))
+	require.Len(t, s.List(), 0)
 }
