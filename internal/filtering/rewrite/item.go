@@ -5,7 +5,6 @@ import (
 	"net"
 	"strings"
 
-	"github.com/AdguardTeam/golibs/errors"
 	"github.com/miekg/dns"
 )
 
@@ -17,13 +16,6 @@ type Item struct {
 	// Answer is the IP address, canonical name, or one of the special
 	// values: "A" or "AAAA".
 	Answer string `yaml:"answer"`
-
-	// Type is the DNS record type: A, AAAA, or CNAME.
-	Type uint16 `yaml:"-"`
-
-	// Exception is the flag to create exception rules with Domain special
-	// values "A" or "AAAA".
-	Exception bool `yaml:"-"`
 }
 
 // equal returns true if rw is equal to other.
@@ -39,55 +31,39 @@ func (rw *Item) equal(other *Item) (ok bool) {
 
 // toRule converts rw to a filter rule.
 func (rw *Item) toRule() (res string) {
-	if rw.Exception {
-		return fmt.Sprintf("@@||%s^$dnstype=%s,dnsrewrite", rw.Domain, dns.TypeToString[rw.Type])
+	domain := strings.ToLower(rw.Domain)
+
+	dType, exception := rw.getRewriteParams()
+	dTypeKey := dns.TypeToString[dType]
+	if exception {
+		return fmt.Sprintf("@@||%s^$dnstype=%s,dnsrewrite", domain, dTypeKey)
 	}
 
-	return fmt.Sprintf("|%s^$dnsrewrite=NOERROR;%s;%s", rw.Domain, dns.TypeToString[rw.Type], rw.Answer)
+	return fmt.Sprintf("|%s^$dnsrewrite=NOERROR;%s;%s", domain, dTypeKey, rw.Answer)
 }
 
-// Normalize makes sure that rw as a new or decoded entry is normalized
-// regarding domain name case, IP length, and so on.
-//
-// If rw is nil, it returns an error.
-func (rw *Item) Normalize() (err error) {
-	if rw == nil {
-		return errors.Error("nil rewrite entry")
-	}
-
-	// TODO(a.garipov): Write a case-agnostic version of strings.HasSuffix and
-	// use it in matchDomainWildcard instead of using strings.ToLower
-	// everywhere.
-	rw.Domain = strings.ToLower(rw.Domain)
-
+// getRewriteParams returns dns request type and exception flag for rw.
+func (rw *Item) getRewriteParams() (dType uint16, exception bool) {
 	switch rw.Answer {
 	case "AAAA":
-		rw.Type = dns.TypeAAAA
-		rw.Exception = true
-
-		return nil
+		return dns.TypeAAAA, true
 	case "A":
-		rw.Type = dns.TypeA
-		rw.Exception = true
-
-		return nil
+		return dns.TypeA, true
 	default:
 		// Go on.
 	}
 
 	ip := net.ParseIP(rw.Answer)
 	if ip == nil {
-		rw.Type = dns.TypeCNAME
-
-		return nil
+		return dns.TypeCNAME, false
 	}
 
 	ip4 := ip.To4()
 	if ip4 != nil {
-		rw.Type = dns.TypeA
+		dType = dns.TypeA
 	} else {
-		rw.Type = dns.TypeAAAA
+		dType = dns.TypeAAAA
 	}
 
-	return nil
+	return dType, false
 }
