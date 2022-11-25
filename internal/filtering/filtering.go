@@ -537,7 +537,8 @@ func (d *DNSFilter) matchSysHosts(
 // CNAME, breaking loops in the process.
 //
 // Secondly, it finds A or AAAA rewrites for host and, if found, sets res.IPList
-// accordingly.
+// accordingly.  If the found rewrite has a special value of "A" or "AAAA", the
+// result is an exception.
 //
 // TODO(a.garipov): Consider moving this to urlfilter.
 func (d *DNSFilter) processRewrites(host string, qtype uint16) (res Result) {
