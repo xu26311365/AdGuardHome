@@ -4,7 +4,6 @@ import (
 	"net"
 	"testing"
 
-	"github.com/AdguardTeam/AdGuardHome/internal/filtering/rewrite"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,7 +15,7 @@ func TestRewrites(t *testing.T) {
 	d, _ := newForTest(t, nil, nil)
 	t.Cleanup(d.Close)
 
-	d.Rewrites = []*rewrite.Item{{
+	d.Rewrites = []*LegacyRewrite{{
 		// This one and below are about CNAME, A and AAAA.
 		Domain: "somecname",
 		Answer: "somehost.com",
@@ -113,7 +112,7 @@ func TestRewrites(t *testing.T) {
 		name:       "wildcard_override",
 		host:       "a.host.com",
 		wantCName:  "",
-		wantIPs:    []net.IP{{1, 2, 3, 4}, {1, 2, 3, 5}},
+		wantIPs:    []net.IP{{1, 2, 3, 4}},
 		wantReason: Rewritten,
 		dtyp:       dns.TypeA,
 	}, {
@@ -192,7 +191,7 @@ func TestRewritesLevels(t *testing.T) {
 	d, _ := newForTest(t, nil, nil)
 	t.Cleanup(d.Close)
 	// Exact host, wildcard L2, wildcard L3.
-	d.Rewrites = []*rewrite.Item{{
+	d.Rewrites = []*LegacyRewrite{{
 		Domain: "host.com",
 		Answer: "1.1.1.1",
 		Type:   dns.TypeA,
@@ -211,26 +210,26 @@ func TestRewritesLevels(t *testing.T) {
 	testCases := []struct {
 		name string
 		host string
-		want []net.IP
+		want net.IP
 	}{{
 		name: "exact_match",
 		host: "host.com",
-		want: []net.IP{{1, 1, 1, 1}},
+		want: net.IP{1, 1, 1, 1},
 	}, {
 		name: "l2_match",
 		host: "sub.host.com",
-		want: []net.IP{{2, 2, 2, 2}},
+		want: net.IP{2, 2, 2, 2},
 	}, {
 		name: "l3_match",
 		host: "my.sub.host.com",
-		want: []net.IP{{3, 3, 3, 3}, {2, 2, 2, 2}},
+		want: net.IP{3, 3, 3, 3},
 	}}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := d.processRewrites(tc.host, dns.TypeA)
 			assert.Equal(t, Rewritten, r.Reason)
-			assert.Equal(t, tc.want, r.IPList)
+			require.Len(t, r.IPList, 1)
 		})
 	}
 }
@@ -239,7 +238,7 @@ func TestRewritesExceptionCNAME(t *testing.T) {
 	d, _ := newForTest(t, nil, nil)
 	t.Cleanup(d.Close)
 	// Wildcard and exception for a sub-domain.
-	d.Rewrites = []*rewrite.Item{{
+	d.Rewrites = []*LegacyRewrite{{
 		Domain: "*.host.com",
 		Answer: "2.2.2.2",
 	}, {
@@ -267,7 +266,7 @@ func TestRewritesExceptionCNAME(t *testing.T) {
 	}, {
 		name: "exception_wildcard",
 		host: "my.sub.host.com",
-		want: net.IP{2, 2, 2, 2},
+		want: nil,
 	}}
 
 	for _, tc := range testCases {
@@ -290,7 +289,7 @@ func TestRewritesExceptionIP(t *testing.T) {
 	d, _ := newForTest(t, nil, nil)
 	t.Cleanup(d.Close)
 	// Exception for AAAA record.
-	d.Rewrites = []*rewrite.Item{{
+	d.Rewrites = []*LegacyRewrite{{
 		Domain: "host.com",
 		Answer: "1.2.3.4",
 		Type:   dns.TypeA,
@@ -310,10 +309,6 @@ func TestRewritesExceptionIP(t *testing.T) {
 		Domain: "host3.com",
 		Answer: "A",
 		Type:   dns.TypeA,
-	}, {
-		Domain: "host3.com",
-		Answer: "::1",
-		Type:   dns.TypeAAAA,
 	}}
 
 	require.NoError(t, d.prepareRewrites())
@@ -351,7 +346,7 @@ func TestRewritesExceptionIP(t *testing.T) {
 	}, {
 		name: "match_AAAA_host3.com",
 		host: "host3.com",
-		want: []net.IP{net.ParseIP("::1")},
+		want: []net.IP{},
 		dtyp: dns.TypeAAAA,
 	}}
 
