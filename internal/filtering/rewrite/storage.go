@@ -47,8 +47,7 @@ type DefaultStorage struct {
 	// remove this crutch.
 	urlFilterID int
 
-	// rewrites is an array of rewrite items.
-	// TODO(d.kolyshev): Use filtering.Config.Rewrites?
+	// rewrites stores the rewrite entries from configuration.
 	rewrites []*Item
 }
 
@@ -80,7 +79,7 @@ func (rw *Item) equal(other *Item) (ok bool) {
 	return rw.Domain == other.Domain && rw.Answer == other.Answer
 }
 
-// toRule converts this item to a filter rule.
+// toRule converts rw to a filter rule.
 func (rw *Item) toRule() (res string) {
 	if rw.Exception {
 		return fmt.Sprintf("@@||%s^$dnstype=%s,dnsrewrite", rw.Domain, dns.TypeToString[rw.Type])
@@ -89,10 +88,10 @@ func (rw *Item) toRule() (res string) {
 	return fmt.Sprintf("|%s^$dnsrewrite=NOERROR;%s;%s", rw.Domain, dns.TypeToString[rw.Type], rw.Answer)
 }
 
-// Normalize makes sure that the a new or decoded entry is normalized with
-// regards to domain name case, IP length, and so on.
+// Normalize makes sure that rw as a new or decoded entry is normalized
+// regarding domain name case, IP length, and so on.
 //
-// If rw is nil, it returns an errors.
+// If rw is nil, it returns an error.
 func (rw *Item) Normalize() (err error) {
 	if rw == nil {
 		return errors.Error("nil rewrite entry")
@@ -158,7 +157,7 @@ func NewDefaultStorage(listID int, rewrites []*Item) (s *DefaultStorage, err err
 // type check
 var _ Storage = (*DefaultStorage)(nil)
 
-// MatchRequest implements the Storage interface for *DefaultStorage.
+// MatchRequest implements the [Storage] interface for *DefaultStorage.
 func (s *DefaultStorage) MatchRequest(dReq *urlfilter.DNSRequest) (res *urlfilter.DNSResult, matched bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -166,7 +165,7 @@ func (s *DefaultStorage) MatchRequest(dReq *urlfilter.DNSRequest) (res *urlfilte
 	return s.engine.MatchRequest(dReq)
 }
 
-// Add implements the Storage interface for *DefaultStorage.
+// Add implements the [Storage] interface for *DefaultStorage.
 func (s *DefaultStorage) Add(item *Item) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -176,7 +175,7 @@ func (s *DefaultStorage) Add(item *Item) (err error) {
 	return s.resetRules()
 }
 
-// Remove implements the Storage interface for *DefaultStorage.
+// Remove implements the [Storage] interface for *DefaultStorage.
 // TODO(d.kolyshev): Delete only current item.
 func (s *DefaultStorage) Remove(item *Item) (err error) {
 	s.mu.Lock()
@@ -198,7 +197,7 @@ func (s *DefaultStorage) Remove(item *Item) (err error) {
 	return s.resetRules()
 }
 
-// List implements the Storage interface for *DefaultStorage.
+// List implements the [Storage] interface for *DefaultStorage.
 func (s *DefaultStorage) List() (items []*Item) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
